@@ -134,6 +134,7 @@ nitroCount      DWORD 0                 ; nitro charges ready to fire with SPACE
 coinStreak      DWORD 0                 ; coins collected towards the next charge
 lastPos         DWORD 1                 ; position at the last HUD refresh
 menuCarX        DWORD 8                 ; column of the little car on the Start screen
+menuSel         DWORD 0                 ; highlighted option of the main menu (0..4)
 
 ; statistics of the current level
 coinsCollected  DWORD 0
@@ -342,7 +343,10 @@ strRule1        BYTE "COIN +10    LAP +50    WIN +200",0
 strRule2        BYTE "2ND +150    3RD +100   4TH +50",0
 strRule3        BYTE "CAR CRASH -15     BARRIER -10",0
 strRule4        BYTE "TRACK EDGE -5   (never below 0)",0
-strMenuHint     BYTE "Press 1, 2 or 3 to choose   -   4 and 5 change the options",0
+strMenuHint     BYTE "W / S or arrow keys + ENTER to choose   -   or press 1 to 5",0
+strMarkOn       BYTE " > ",0
+menuItemPtr     DWORD OFFSET strMenu1, OFFSET strMenu2, OFFSET strMenu3
+                DWORD OFFSET strMenu4, OFFSET strMenu5
 strCredits      BYTE "COAL Final Project  -  Fall 2026",0
 strSubTitle     BYTE "T H E   C O N S O L E   G R A N D   P R I X",0
 strBye          BYTE "Thanks for racing. Goodbye!",0
@@ -352,16 +356,6 @@ startTable      BYTE 38,8,0Bh
                 DWORD OFFSET strSubTitle
                 BYTE 27,10,0Eh
                 DWORD OFFSET strMenuTitle
-                BYTE 16,12,0Fh
-                DWORD OFFSET strMenu1
-                BYTE 16,14,0Fh
-                DWORD OFFSET strMenu2
-                BYTE 16,16,0Fh
-                DWORD OFFSET strMenu3
-                BYTE 16,18,07h
-                DWORD OFFSET strMenu4
-                BYTE 16,20,07h
-                DWORD OFFSET strMenu5
                 BYTE 77,10,0Eh
                 DWORD OFFSET strFameTitle
                 BYTE 68,12,0Fh
@@ -1100,7 +1094,8 @@ SaveHighScore ENDP
 ; =====================================================================================
 
 ; -------------------------------------------------------------------------------------
-; StartScreen : shows the menu and the highest score
+; StartScreen : main menu. W / S or the arrow keys move the highlight, ENTER chooses;
+;               the number keys 1..5 choose an option directly
 ; Returns: AL = '1' (start), '2' (instructions) or '3' (quit)
 ; -------------------------------------------------------------------------------------
 StartScreen PROC
@@ -1111,17 +1106,52 @@ ssKey:
     call AnimateMenuCar
     call ReadKey
     jz ssKey                            ; no key yet
-    cmp al,'1'
-    je ssDone
-    cmp al,'2'
-    je ssDone
-    cmp al,'3'
-    je ssDone
-    cmp al,'4'
-    je ssDifficulty
-    cmp al,'5'
-    je ssSound
+    cmp al,0
+    jne ssAscii
+    cmp ah,48h                          ; up arrow
+    je ssUp
+    cmp ah,50h                          ; down arrow
+    je ssDown
     jmp ssKey
+ssAscii:
+    cmp al,0Dh                          ; ENTER chooses the highlighted option
+    je ssActivate
+    cmp al,'1'
+    jb ssLetter
+    cmp al,'5'
+    ja ssLetter
+    sub al,'1'                          ; a number key chooses its option directly
+    movzx eax,al
+    mov menuSel,eax
+    jmp ssActivate
+ssLetter:
+    or al,20h
+    cmp al,'w'
+    je ssUp
+    cmp al,'s'
+    je ssDown
+    jmp ssKey
+ssUp:                                   ; the highlight wraps around at both ends
+    cmp menuSel,0
+    jne ssUpMove
+    mov menuSel,5
+ssUpMove:
+    dec menuSel
+    jmp ssRefresh
+ssDown:
+    inc menuSel
+    cmp menuSel,5
+    jb ssRefresh
+    mov menuSel,0
+    jmp ssRefresh
+ssActivate:
+    cmp menuSel,3
+    je ssDifficulty
+    cmp menuSel,4
+    je ssSound
+    mov eax,menuSel                     ; Start, Instructions or Quit
+    add al,'1'
+    ret
 ssDifficulty:                           ; easy -> normal -> hard -> easy
     inc difficulty
     cmp difficulty,3
@@ -1132,10 +1162,8 @@ ssSound:
     xor soundOn,1
     call PlayBeep
 ssRefresh:
-    call DrawStartValues
+    call DrawMenuItems
     jmp ssKey
-ssDone:
-    ret
 StartScreen ENDP
 
 ; -------------------------------------------------------------------------------------
@@ -1247,31 +1275,62 @@ DrawStartValues PROC
     mov bh,14
     mov edx,OFFSET highName
     call PrintAt
-    mov eax,lightGreen
-    call SetTextColor
-    mov dl,35
-    mov dh,18
+    call DrawMenuItems
+    call DrainKeys                      ; keys pressed earlier must not choose an option
+    popad
+    ret
+DrawStartValues ENDP
+
+; -------------------------------------------------------------------------------------
+; DrawMenuItems : draws the five options of the main menu; the selected option is shown
+;                 as a highlighted bar, options 4 and 5 also show their current value
+; -------------------------------------------------------------------------------------
+DrawMenuItems PROC
+    pushad
+    mov esi,0                           ; ESI = option number
+dmNext:
+    mov dl,13
+    mov eax,esi
+    add eax,eax
+    add eax,12                          ; options are on rows 12, 14, 16, 18, 20
+    mov dh,al
     call Gotoxy
+    mov eax,ATTR_BRIGHT
+    mov edx,OFFSET strPad3
+    cmp esi,menuSel
+    jne dmColor
+    mov eax,0E0h                        ; selected: black text on a yellow bar
+    mov edx,OFFSET strMarkOn
+dmColor:
+    call SetTextColor
+    call WriteString                    ; marker in front of the option
+    mov edx,menuItemPtr[esi*4]
+    mov ecx,19
+    call WritePadded
+    mov edx,OFFSET strEmpty             ; value shown after the option
+    cmp esi,3
+    jne dmSound
     mov eax,difficulty
     mov edx,diffNamePtr[eax*4]
-    mov ecx,8
-    call WritePadded
-    mov dl,35
-    mov dh,20
-    call Gotoxy
+dmSound:
+    cmp esi,4
+    jne dmValue
     mov edx,OFFSET strOn
     cmp soundOn,0
-    jne dvSound
+    jne dmValue
     mov edx,OFFSET strOff
-dvSound:
-    mov ecx,4
+dmValue:
+    mov ecx,20
     call WritePadded
+    inc esi
+    cmp esi,5
+    jb dmNext
     mov dl,0                            ; park the cursor
     mov dh,29
     call Gotoxy
     popad
     ret
-DrawStartValues ENDP
+DrawMenuItems ENDP
 
 ; -------------------------------------------------------------------------------------
 ; InstructionScreen : explains the controls, the objects and the scoring rules

@@ -40,7 +40,8 @@ Edit `MASMDIR` at the top of the script if MASM is not in `C:\Masm615`.
 | `SPACE` | Fire a nitro charge |
 | `P` | Pause, `P` again to resume |
 | `X` | Quit the race and return to the Start screen |
-| `1` .. `5` | Menu options on the Start, Pause and Result screens |
+| `W` / `S` or arrows + `ENTER` | Move and choose in the main menu |
+| `1` .. `5` | Choose a menu option directly (Start, Pause and Result screens) |
 
 ## Scoring
 
