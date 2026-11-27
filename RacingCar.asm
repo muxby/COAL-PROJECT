@@ -56,13 +56,21 @@ EDGE_COOLDOWN   = 12                    ; frames before another boundary hit can
 MSG_FRAMES      = 50                    ; how long an event message stays visible
 LANE_CHANGE_ODDS = 80                   ; an opponent changes lane about once in 80 frames
 LANE_CLEAR_ROWS = 6                     ; rows that must be free before a lane change
+MAGNET_FRAMES   = 150                   ; 6 seconds of coin magnet
+MAGNET_REACH    = 10                    ; columns from which a coin is pulled in
+MAGNET_ROWS     = 12                    ; rows ahead of the car that the magnet reaches
+SKID_FRAMES     = 16                    ; frames the car slides after an oil spill
+NITRO_COINS     = 5                     ; coins needed to fill one nitro charge
+MAX_NITRO       = 3                     ; nitro charges the car can carry
 
 ; --------------------------------------- items ---------------------------------------
-MAX_ITEMS       = 24
+MAX_ITEMS       = 32
 K_COIN          = 0
 K_OBST          = 1
 K_BOOST         = 2
 K_SHIELD        = 3
+K_MAGNET        = 4                     ; bonus: pulls coins towards the car
+K_OIL           = 5                     ; bonus: oil spill, the car skids sideways
 ITEM_FIRST_ROW  = 24                    ; first lap row that may hold an item
 ITEM_SPACING    = 4                     ; rows between two item slots
 NUM_SLOTS       = 31                    ; item slots in one lap
@@ -119,6 +127,13 @@ playerPos       DWORD 1                 ; live position of the player (1..5)
 playerPlace     DWORD 1                 ; final position of the player
 placeBonusWon   DWORD 0
 newHighFlag     DWORD 0
+magnetTimer     DWORD 0                 ; frames of coin magnet that are left
+skidTimer       DWORD 0                 ; frames of sliding on oil that are left
+skidDir         DWORD 1                 ; direction of the slide (-1 or +1)
+nitroCount      DWORD 0                 ; nitro charges ready to fire with SPACE
+coinStreak      DWORD 0                 ; coins collected towards the next charge
+lastPos         DWORD 1                 ; position at the last HUD refresh
+menuCarX        DWORD 8                 ; column of the little car on the Start screen
 
 ; statistics of the current level
 coinsCollected  DWORD 0
@@ -129,7 +144,7 @@ boundaryHits    DWORD 0
 totalPenalty    DWORD 0
 
 ; ============================ level settings (current level) =========================
-; SetupLevel copies one record of levelTable into these seven variables, so the same
+; SetupLevel copies one record of levelTable into these nine variables, so the same
 ; race procedures work for both levels.
 lvlTrackW       DWORD ?                 ; road width in columns
 lvlPitch        DWORD ?                 ; distance between two lane marks
@@ -138,13 +153,15 @@ lvlCoins        DWORD ?                 ; coins per lap
 lvlObst         DWORD ?                 ; obstacles per lap
 lvlBoost        DWORD ?                 ; speed boosters per lap
 lvlLaneChange   DWORD ?                 ; 1 = opponents change lanes
+lvlOil          DWORD ?                 ; oil spills per lap
+lvlMoving       DWORD ?                 ; obstacles that slide across the road
 roadLeft        DWORD ?                 ; first road column
 roadRight       DWORD ?                 ; last road column
 
-LEVEL_REC_SIZE  = 28
-;                      width pitch margin coins obstacles boosters lane-change
-levelTable      DWORD  44,   8,    2,     8,    3,        2,       0      ; level 1
-                DWORD  32,   6,    1,     14,   6,        2,       1      ; level 2
+LEVEL_REC_SIZE  = 36
+;                      width pitch margin coins obstacles boosters lane-change oil moving
+levelTable      DWORD  44,   8,    2,     8,    3,        2,       0,          1,  0   ; level 1
+                DWORD  32,   6,    1,     14,   6,        2,       1,          2,  2   ; level 2
 
 ; theme of the current level (copied from themeTable)
 groundAttr      BYTE ?                  ; colour of the ground beside the road
@@ -184,6 +201,7 @@ carLaps         DWORD NUM_CARS DUP(0)   ; laps completed
 carDone         DWORD NUM_CARS DUP(0)   ; 1 when the car has finished the race
 carRel          DWORD NUM_CARS DUP(0)   ; row of the car inside its current lap
 carColor        BYTE 8Ch,89h,8Ah,8Dh,8Bh
+playerColors    BYTE 8Ch,8Eh,8Fh        ; red, yellow or white player car
 startLane       DWORD 2,0,1,3,4         ; the player starts in the middle lane
 gearSpeed       DWORD 6,8,10,12,14      ; player speed in each gear
 oppSpeed        DWORD 9,10,11,12        ; normal speeds of the four opponents
@@ -209,16 +227,19 @@ itemKind        BYTE MAX_ITEMS DUP(0)   ; K_COIN, K_OBST, K_BOOST or K_SHIELD
 itemActive      BYTE MAX_ITEMS DUP(0)   ; 1 while the item is still on the road
 itemX           DWORD MAX_ITEMS DUP(0)  ; left column
 itemRow         DWORD MAX_ITEMS DUP(0)  ; row inside the lap
+itemDir         DWORD MAX_ITEMS DUP(0)  ; -1 / +1 for an obstacle that slides, else 0
 itemCount       DWORD 0
 slotUsed        BYTE NUM_SLOTS DUP(0)
 
-;                    coin  obstacle  booster  shield
-kindWidth       BYTE 2,    4,        3,       3
-kindAttr        BYTE 8Eh,  0FCh,     9Fh,     0B0h
+;                    coin  obstacle  booster  shield  magnet  oil
+kindWidth       BYTE 2,    4,        3,       3,      3,      4
+kindAttr        BYTE 8Eh,  0FCh,     9Fh,     0B0h,   5Fh,    08h
 kindChars       BYTE "()",0,0
                 BYTE 0B2h,0B2h,0B2h,0B2h
                 BYTE "^^^",0
                 BYTE "[S]",0
+                BYTE "(M)",0
+                BYTE "~~~~"
 
 ; =================================== frame buffers ===================================
 newChr          BYTE VIEW_CELLS DUP(' ')
@@ -284,11 +305,20 @@ msgRivalBoost   BYTE "A RIVAL TOOK A BOOSTER",0
 msgShieldOn     BYTE "SHIELD READY",0
 msgShieldUsed   BYTE "SHIELD ABSORBED THE HIT",0
 msgGo           BYTE "GO  GO  GO !",0
+msgMagnet       BYTE "COIN MAGNET ON",0
+msgOil          BYTE "OIL!  THE CAR IS SLIDING",0
+msgNitroReady   BYTE "NITRO READY - PRESS SPACE",0
+msgNitro        BYTE "NITRO  !!!",0
+msgPosUp        BYTE "OVERTAKE!  ONE PLACE UP",0
+msgPosDown      BYTE "A RIVAL HAS PASSED YOU",0
+msgFinalLap     BYTE "FINAL LAP !",0
 
 strStNormal     BYTE "NORMAL",0
 strStBoost      BYTE "BOOSTED",0
 strStSlow       BYTE "SLOWED",0
 strStShield     BYTE "SHIELD ON",0
+strStMagnet     BYTE "MAGNET",0
+strMenuCar      BYTE 0DCh,0DBh,0DFh,0DBh,0DCh,0     ; little car on the Start screen
 
 strEasy         BYTE "EASY",0
 strNormal       BYTE "NORMAL",0
@@ -364,21 +394,25 @@ strIns3         BYTE "A / D  or  Left / Right arrows ...... steer the car",0
 strIns4         BYTE "W / S  or  Up / Down arrows ......... shift one gear up / down (5 gears)",0
 strIns5         BYTE "P ................................... pause the race, P again to resume",0
 strIns6         BYTE "X ................................... quit the race and go back to the Start screen",0
+strIns6b        BYTE "SPACE ............................... fire a nitro charge (5 coins fill one charge, max 3)",0
 strInsRoad      BYTE "ON THE ROAD",0
 strSmpCoin      BYTE "()",0
 strSmpObst      BYTE 0B2h,0B2h,0B2h,0B2h,0
 strSmpBoost     BYTE "^^^",0
 strSmpShield    BYTE "[S]",0
+strSmpMagnet    BYTE "(M)",0
+strSmpOil       BYTE "~~~~",0
 strIns7         BYTE "Coin: +10 points. Level 2 has more coins on the road.",0
-strIns8         BYTE "Barrier: -10 points and the car is slowed down for 2 seconds.",0
+strIns8         BYTE "Barrier: -10 points and 2 seconds of reduced speed. In Level 2 some barriers slide!",0
 strIns9         BYTE "Speed booster: 3 seconds of extra speed. A rival can take it before you!",0
 strIns10        BYTE "Shield (bonus item): absorbs your next crash with a car or a barrier.",0
+strIns10b       BYTE "Magnet (bonus item): pulls nearby coins towards your car for 6 seconds.",0
+strIns10c       BYTE "Oil spill: no points lost, but the car slides sideways - keep away from the edge.",0
 strInsScore     BYTE "SCORING",0
 strIns11        BYTE "Coin +10  |  Lap completed +50  |  Finish 1st +200, 2nd +150, 3rd +100, 4th +50, 5th +0",0
 strIns12        BYTE "Hitting a rival car -15  |  Barrier -10  |  Track edge -5  |  The score never drops below 0",0
 strInsTips      BYTE "TIPS",0
-strIns13        BYTE "Rivals are slowed by barriers and track edges too, so a clean lap can win you places.",0
-strIns14        BYTE "A higher gear is faster but leaves less time to react. Hitting a rival also slows you.",0
+strIns13        BYTE "Rivals hit barriers and edges too. A higher gear is faster but leaves less time to react.",0
 strInsKey       BYTE "Press any key to return to the Start screen",0
 
 instrTable      BYTE 53,1,0Eh
@@ -399,36 +433,44 @@ instrTable      BYTE 53,1,0Eh
                 DWORD OFFSET strIns5
                 BYTE 8,11,0Fh
                 DWORD OFFSET strIns6
-                BYTE 8,13,0Eh
+                BYTE 8,12,0Fh
+                DWORD OFFSET strIns6b
+                BYTE 8,14,0Eh
                 DWORD OFFSET strInsRoad
-                BYTE 8,14,8Eh
+                BYTE 8,15,8Eh
                 DWORD OFFSET strSmpCoin
-                BYTE 16,14,0Fh
-                DWORD OFFSET strIns7
-                BYTE 8,15,0FCh
-                DWORD OFFSET strSmpObst
                 BYTE 16,15,0Fh
-                DWORD OFFSET strIns8
-                BYTE 8,16,9Fh
-                DWORD OFFSET strSmpBoost
+                DWORD OFFSET strIns7
+                BYTE 8,16,0FCh
+                DWORD OFFSET strSmpObst
                 BYTE 16,16,0Fh
-                DWORD OFFSET strIns9
-                BYTE 8,17,0B0h
-                DWORD OFFSET strSmpShield
+                DWORD OFFSET strIns8
+                BYTE 8,17,9Fh
+                DWORD OFFSET strSmpBoost
                 BYTE 16,17,0Fh
+                DWORD OFFSET strIns9
+                BYTE 8,18,0B0h
+                DWORD OFFSET strSmpShield
+                BYTE 16,18,0Fh
                 DWORD OFFSET strIns10
-                BYTE 8,19,0Eh
+                BYTE 8,19,5Fh
+                DWORD OFFSET strSmpMagnet
+                BYTE 16,19,0Fh
+                DWORD OFFSET strIns10b
+                BYTE 8,20,08h
+                DWORD OFFSET strSmpOil
+                BYTE 16,20,0Fh
+                DWORD OFFSET strIns10c
+                BYTE 8,22,0Eh
                 DWORD OFFSET strInsScore
-                BYTE 8,20,0Fh
+                BYTE 8,23,0Fh
                 DWORD OFFSET strIns11
-                BYTE 8,21,0Fh
-                DWORD OFFSET strIns12
-                BYTE 8,23,0Eh
-                DWORD OFFSET strInsTips
                 BYTE 8,24,0Fh
+                DWORD OFFSET strIns12
+                BYTE 8,25,0Eh
+                DWORD OFFSET strInsTips
+                BYTE 16,25,0Fh
                 DWORD OFFSET strIns13
-                BYTE 8,25,0Fh
-                DWORD OFFSET strIns14
                 BYTE 38,27,0Ah
                 DWORD OFFSET strInsKey
                 BYTE 0FFh
@@ -438,6 +480,23 @@ strNameTitle    BYTE " DRIVER LICENCE ",0
 strNameAsk      BYTE "Type your name (max 15 letters), then press ENTER",0
 strNamePrompt   BYTE "NAME > ",0
 strNameHint     BYTE "Leave it empty to race as PLAYER",0
+strCarTitle     BYTE " PICK YOUR CAR ",0
+strCarAsk       BYTE "Choose the colour of your car: press 1, 2 or 3",0
+strCar1         BYTE "[1] RED",0
+strCar2         BYTE "[2] YELLOW",0
+strCar3         BYTE "[3] WHITE",0
+
+carTable        BYTE 52,9,0Eh
+                DWORD OFFSET strCarTitle
+                BYTE 37,11,0Fh
+                DWORD OFFSET strCarAsk
+                BYTE 39,17,07h
+                DWORD OFFSET strCar1
+                BYTE 56,17,07h
+                DWORD OFFSET strCar2
+                BYTE 75,17,07h
+                DWORD OFFSET strCar3
+                BYTE 0FFh
 
 nameTable       BYTE 52,9,0Eh
                 DWORD OFFSET strNameTitle
@@ -459,7 +518,7 @@ strHudTime      BYTE "TIME:",0
 strHudBest      BYTE "BEST:",0
 strHudPos       BYTE "POS:",0
 strHudOf5       BYTE " / 5",0
-strHelpLine     BYTE "A / D : steer    W / S : gear up / down    P : pause    X : quit the race",0
+strHelpLine     BYTE "A / D : steer    W / S : gear    SPACE : nitro    P : pause    X : quit the race",0
 
 hudTable        BYTE 1,0,ATTR_HUD
                 DWORD OFFSET strHudPlayer
@@ -489,7 +548,10 @@ strPanGear      BYTE "GEAR     :",0
 strPanStatus    BYTE "STATUS   :",0
 strPanCoins     BYTE "COINS    :",0
 strPanCrash     BYTE "CRASHES  :",0
-strPanLap       BYTE "LAP PROGRESS",0
+strPanLap       BYTE "LAP MAP  (all five cars)",0
+strPanNitro     BYTE "NITRO    :",0
+strLegMagnet    BYTE "Magnet    coins",0
+strLegOil       BYTE "Oil spill  skid",0
 strPanStand     BYTE "STANDINGS",0
 strPanLegend    BYTE "LEGEND",0
 strLegCoin      BYTE "Coin        +10",0
@@ -511,7 +573,9 @@ panelTable      BYTE 98,2,0Eh
                 DWORD OFFSET strPanCoins
                 BYTE 91,8,07h
                 DWORD OFFSET strPanCrash
-                BYTE 91,10,0Bh
+                BYTE 91,9,07h
+                DWORD OFFSET strPanNitro
+                BYTE 91,11,0Bh
                 DWORD OFFSET strPanLap
                 BYTE 91,13,0Bh
                 DWORD OFFSET strPanStand
@@ -533,6 +597,14 @@ panelTable      BYTE 98,2,0Eh
                 DWORD OFFSET strSmpShield
                 BYTE 97,24,07h
                 DWORD OFFSET strLegShield
+                BYTE 91,25,5Fh
+                DWORD OFFSET strSmpMagnet
+                BYTE 97,25,07h
+                DWORD OFFSET strLegMagnet
+                BYTE 91,26,08h
+                DWORD OFFSET strSmpOil
+                BYTE 97,26,07h
+                DWORD OFFSET strLegOil
                 BYTE 0FFh
 
 strGetReady     BYTE "GET  READY",0
@@ -1034,7 +1106,11 @@ SaveHighScore ENDP
 StartScreen PROC
     call DrawStartScreen
 ssKey:
-    call ReadChar
+    mov eax,60                          ; the little car keeps driving while we wait
+    call Delay
+    call AnimateMenuCar
+    call ReadKey
+    jz ssKey                            ; no key yet
     cmp al,'1'
     je ssDone
     cmp al,'2'
@@ -1061,6 +1137,62 @@ ssRefresh:
 ssDone:
     ret
 StartScreen ENDP
+
+; -------------------------------------------------------------------------------------
+; AnimateMenuCar : moves a little car one column to the right under the menu boxes
+; -------------------------------------------------------------------------------------
+AnimateMenuCar PROC
+    pushad
+    mov eax,menuCarX
+    mov dl,al
+    mov dh,23
+    call Gotoxy
+    mov eax,lightRed
+    call SetTextColor
+    mov al,' '                          ; erase the back of the car
+    call WriteChar
+    inc menuCarX
+    cmp menuCarX,106
+    jb amDraw
+    mov ecx,5                           ; end of the road: erase the car, start again
+    call RepeatChar
+    mov menuCarX,8
+    jmp amDone
+amDraw:
+    mov edx,OFFSET strMenuCar
+    call WriteString
+amDone:
+    mov dl,0
+    mov dh,29
+    call Gotoxy
+    popad
+    ret
+AnimateMenuCar ENDP
+
+; -------------------------------------------------------------------------------------
+; DrawCarAt : draws the 3 x 3 car sprite directly on the screen (menus)
+; Receives: DL = column, DH = row, EAX = colour
+; -------------------------------------------------------------------------------------
+DrawCarAt PROC
+    pushad
+    call SetTextColor
+    mov esi,OFFSET carSprite
+    mov ecx,CAR_H
+dcRow:
+    call Gotoxy
+    mov ebx,CAR_W
+dcCol:
+    mov al,[esi]
+    call WriteChar
+    inc esi
+    dec ebx
+    jnz dcCol
+    inc dh
+    dec ecx
+    jnz dcRow
+    popad
+    ret
+DrawCarAt ENDP
 
 ; -------------------------------------------------------------------------------------
 ; DrawStartScreen : draws the complete Start screen
@@ -1167,7 +1299,7 @@ InstructionScreen PROC
 InstructionScreen ENDP
 
 ; -------------------------------------------------------------------------------------
-; NameScreen : asks for the name of the player and stores it in playerName
+; NameScreen : asks for the name of the player and the colour of the car
 ; -------------------------------------------------------------------------------------
 NameScreen PROC
     pushad
@@ -1201,6 +1333,39 @@ nsCopy:
     mov edi,OFFSET playerName
     mov ecx,NAME_SIZE
     call CopyString
+
+    mov eax,ATTR_PANEL                  ; second step: pick the colour of the car
+    call SetTextColor
+    mov dl,30
+    mov dh,9
+    mov bl,60
+    mov bh,11
+    call DrawBox
+    mov esi,OFFSET carTable
+    call PrintTable
+    mov ecx,0
+nsCar:
+    mov eax,ecx
+    imul eax,18
+    add eax,41
+    mov dl,al                           ; cars at columns 41, 59 and 77
+    mov dh,13
+    movzx eax,playerColors[ecx]
+    call DrawCarAt
+    inc ecx
+    cmp ecx,3
+    jb nsCar
+    mov dl,0
+    mov dh,29
+    call Gotoxy
+nsPick:
+    call ReadChar
+    sub al,'1'
+    cmp al,2
+    ja nsPick                           ; only 1, 2 and 3 are accepted
+    movzx eax,al
+    mov al,playerColors[eax]
+    mov carColor,al                     ; car 0 is the player
     popad
     ret
 NameScreen ENDP
@@ -1222,7 +1387,7 @@ SetupLevel PROC
     mov esi,OFFSET levelTable
     add esi,eax
     mov edi,OFFSET lvlTrackW
-    mov ecx,7
+    mov ecx,9
     rep movsd
     mov eax,lvlTrackW                   ; the road is centred in the view
     shr eax,1
@@ -1284,6 +1449,11 @@ InitRace PROC
     mov obstacleHits,eax
     mov boundaryHits,eax
     mov totalPenalty,eax
+    mov magnetTimer,eax
+    mov skidTimer,eax
+    mov nitroCount,eax
+    mov coinStreak,eax
+    mov lastPos,1
     mov playerPos,1
     mov gear,START_GEAR
 
@@ -1402,7 +1572,7 @@ gsNext:
 GenerateSide ENDP
 
 ; -------------------------------------------------------------------------------------
-; GenerateItems : new random coins, obstacles, boosters and one shield for a lap
+; GenerateItems : new random coins, obstacles, boosters, power-ups and oil for a lap
 ; -------------------------------------------------------------------------------------
 GenerateItems PROC
     pushad
@@ -1425,6 +1595,22 @@ giClear:
     mov edx,K_SHIELD
     mov ecx,1
     call AddItems
+    mov edx,K_MAGNET
+    mov ecx,1
+    call AddItems
+    mov edx,K_OIL
+    mov ecx,lvlOil
+    call AddItems
+    mov ecx,lvlMoving                   ; the first obstacles of the lap slide sideways
+    mov edi,lvlCoins                    ; (the obstacles are stored after the coins)
+giMoving:
+    cmp ecx,0
+    je giDone
+    mov itemDir[edi*4],1
+    inc edi
+    dec ecx
+    jmp giMoving
+giDone:
     popad
     ret
 GenerateItems ENDP
@@ -1466,6 +1652,7 @@ aiFree:
     mov itemX[edi*4],eax
     mov itemKind[edi],dl
     mov itemActive[edi],1
+    mov itemDir[edi*4],0
     inc itemCount
     dec ecx
     jmp aiNext
@@ -1944,6 +2131,21 @@ UpdateHud PROC
     pushad
     call ComputeRanking
 
+    mov eax,playerPos                   ; commentary when the position changes
+    cmp eax,lastPos
+    je uhPosKept
+    mov lastPos,eax
+    ja uhPosLost
+    mov edx,OFFSET msgPosUp
+    mov al,lightGreen
+    call SetMsg
+    jmp uhPosKept
+uhPosLost:
+    mov edx,OFFSET msgPosDown
+    mov al,lightMagenta
+    call SetMsg
+uhPosKept:
+
     ; ---------------- top bar: lap, score, time, position ----------------
     mov eax,ATTR_HUD_VALUE
     call SetTextColor
@@ -2007,6 +2209,8 @@ uhGearColor:
     jne uhSlow
     cmp carBoost,0
     jne uhBoost
+    cmp magnetTimer,0
+    jne uhMagnet
     cmp shieldOn,0
     jne uhShield
     mov eax,lightGreen
@@ -2019,6 +2223,10 @@ uhSlow:
 uhBoost:
     mov eax,lightCyan
     mov edx,OFFSET strStBoost
+    jmp uhStatus
+uhMagnet:
+    mov eax,lightMagenta
+    mov edx,OFFSET strStMagnet
     jmp uhStatus
 uhShield:
     mov eax,lightCyan
@@ -2041,31 +2249,57 @@ uhStatus:
     add eax,boundaryHits
     call PrintNumAt
 
-    ; ---------------- panel: lap progress bar ----------------
-    mov dl,91
-    mov dh,11
+    ; ---------------- panel: nitro charges ----------------
+    mov dl,102
+    mov dh,9
     call Gotoxy
-    mov eax,carRel
+    mov ecx,1
+uhNitro:
+    mov eax,lightCyan
+    cmp ecx,nitroCount
+    jbe uhNitroColor
+    mov eax,gray
+uhNitroColor:
+    call SetTextColor
+    mov al,0FEh
+    call WriteChar
+    mov al,' '
+    call WriteChar
+    inc ecx
+    cmp ecx,MAX_NITRO
+    jbe uhNitro
+
+    ; ---------------- panel: lap map with a marker for every car ----------------
+    mov dl,91
+    mov dh,12
+    call Gotoxy
+    mov eax,gray
+    call SetTextColor
+    mov al,0C4h
+    mov ecx,PROGRESS_CELLS
+    call RepeatChar
+    mov esi,NUM_CARS-1                  ; the player is drawn last, on top
+uhMap:
+    mov eax,carRel[esi*4]
     cmp eax,LAP_LEN
-    jb uhBar
+    jb uhMapCell
     mov eax,0                           ; still before the starting line
-uhBar:
+uhMapCell:
     imul eax,PROGRESS_CELLS
     mov edx,0
     mov ebx,LAP_LEN
-    div ebx
-    mov ebx,eax                         ; EBX = filled cells
-    mov eax,lightGreen
+    div ebx                             ; EAX = cell of the car (0..25)
+    mov dl,91
+    add dl,al
+    mov dh,12
+    call Gotoxy
+    movzx eax,carColor[esi]
+    and eax,0Fh
     call SetTextColor
-    mov al,0DBh
-    mov ecx,ebx
-    call RepeatChar
-    mov eax,gray
-    call SetTextColor
-    mov al,0B0h
-    mov ecx,PROGRESS_CELLS
-    sub ecx,ebx
-    call RepeatChar
+    mov al,0FEh
+    call WriteChar
+    dec esi
+    jns uhMap
 
     ; ---------------- panel: standings of the five cars ----------------
     mov ecx,0
@@ -2109,7 +2343,7 @@ uhStandingName:
 
     ; ---------------- panel: last event ----------------
     mov dl,91
-    mov dh,26
+    mov dh,27
     call Gotoxy
     mov eax,ATTR_TEXT
     mov edx,OFFSET strEmpty
@@ -2172,6 +2406,7 @@ rrFrame:
     jne rrEnd
     call UpdatePlayer
     call UpdateOpponents
+    call MoveItems
     call CheckItems
     call CheckLaps
     call UpdateTimers
@@ -2254,7 +2489,8 @@ Countdown ENDP
 
 ; -------------------------------------------------------------------------------------
 ; HandleInput : reads every waiting key without stopping the race (ReadKey)
-;               A/D or arrows steer, W/S or arrows change gear, P pauses, X quits
+;               A/D or arrows steer, W/S or arrows change gear, SPACE fires nitro,
+;               P pauses, X quits
 ; -------------------------------------------------------------------------------------
 HandleInput PROC
     pushad
@@ -2287,6 +2523,18 @@ hiLetter:
     je hiPause
     cmp al,'x'
     je hiQuit
+    cmp al,' '
+    je hiNitro
+    jmp hiAgain
+hiNitro:                                ; SPACE fires one nitro charge
+    cmp nitroCount,0
+    je hiAgain
+    dec nitroCount
+    mov carBoost,BOOST_FRAMES
+    mov edx,OFFSET msgNitro
+    mov al,lightCyan
+    call SetMsg
+    call PlayBeep
     jmp hiAgain
 hiLeft:
     mov eax,-STEER_STEP
@@ -2485,6 +2733,14 @@ SteerPlayer ENDP
 ; -------------------------------------------------------------------------------------
 UpdatePlayer PROC
     pushad
+    cmp skidTimer,0                     ; sliding on oil: the car drifts by itself
+    je upDrive
+    dec skidTimer
+    test skidTimer,1
+    jnz upDrive
+    mov eax,skidDir
+    call SteerPlayer
+upDrive:
     mov esi,0
     call GetSpeed
     mov ebx,carPos
@@ -2706,6 +2962,7 @@ ComputeCarRel ENDP
 CheckItems PROC
     pushad
     call ComputeCarRel
+    call MagnetPull
     mov edi,0                           ; EDI = item number
 ckItem:
     cmp edi,itemCount
@@ -2745,6 +3002,86 @@ ckDone:
 CheckItems ENDP
 
 ; -------------------------------------------------------------------------------------
+; MoveItems : slides the moving obstacles from kerb to kerb (one column every 4 frames)
+; -------------------------------------------------------------------------------------
+MoveItems PROC
+    pushad
+    test raceFrames,3
+    jnz miDone
+    mov esi,0
+miNext:
+    cmp esi,itemCount
+    jae miDone
+    cmp itemActive[esi],0
+    je miSkip
+    mov eax,itemDir[esi*4]
+    cmp eax,0
+    je miSkip                           ; this item does not move
+    add eax,itemX[esi*4]                ; EAX = new left column
+    cmp eax,roadLeft
+    jl miTurn
+    movzx ebx,itemKind[esi]
+    movzx ebx,kindWidth[ebx]
+    add ebx,eax
+    dec ebx                             ; EBX = new right column
+    cmp ebx,roadRight
+    jg miTurn
+    mov itemX[esi*4],eax
+    jmp miSkip
+miTurn:
+    neg itemDir[esi*4]                  ; bounce off the kerb
+miSkip:
+    inc esi
+    jmp miNext
+miDone:
+    popad
+    ret
+MoveItems ENDP
+
+; -------------------------------------------------------------------------------------
+; MagnetPull : while the magnet is active, coins ahead of the player slide one column
+;              per frame towards the car
+; -------------------------------------------------------------------------------------
+MagnetPull PROC
+    pushad
+    cmp magnetTimer,0
+    je mpDone
+    mov esi,0
+mpNext:
+    cmp esi,itemCount
+    jae mpDone
+    cmp itemActive[esi],0
+    je mpSkip
+    cmp itemKind[esi],K_COIN
+    jne mpSkip
+    mov eax,itemRow[esi*4]
+    sub eax,carRel
+    cmp eax,MAGNET_ROWS
+    jae mpSkip                          ; behind the car or too far ahead
+    mov eax,itemX[esi*4]
+    sub eax,carX
+    jns mpDistance
+    neg eax
+mpDistance:
+    cmp eax,MAGNET_REACH
+    ja mpSkip                           ; too far to the side
+    mov eax,carX
+    cmp itemX[esi*4],eax
+    je mpSkip
+    jl mpRight
+    dec itemX[esi*4]
+    jmp mpSkip
+mpRight:
+    inc itemX[esi*4]
+mpSkip:
+    inc esi
+    jmp mpNext
+mpDone:
+    popad
+    ret
+MagnetPull ENDP
+
+; -------------------------------------------------------------------------------------
 ; CollectItem : what happens when a car drives over an item
 ; Receives: EDI = item number, ESI = car number, EBX = kind of the item
 ; -------------------------------------------------------------------------------------
@@ -2756,6 +3093,10 @@ CollectItem PROC
     je coObstacle
     cmp ebx,K_BOOST
     je coBooster
+    cmp ebx,K_MAGNET
+    je coMagnet
+    cmp ebx,K_OIL
+    je coOil
 
     cmp esi,0                           ; shield: only the player can use it
     jne coDone
@@ -2777,6 +3118,43 @@ coCoin:                                 ; coins are for the player only
     mov al,yellow
     call SetMsg
     call PlayBeep
+    inc coinStreak                      ; every 5th coin fills a nitro charge
+    cmp coinStreak,NITRO_COINS
+    jb coDone
+    mov coinStreak,0
+    cmp nitroCount,MAX_NITRO
+    jae coDone
+    inc nitroCount
+    mov edx,OFFSET msgNitroReady
+    mov al,lightCyan
+    call SetMsg
+    jmp coDone
+
+coMagnet:                               ; magnet: only the player can use it
+    cmp esi,0
+    jne coDone
+    mov itemActive[edi],0
+    mov magnetTimer,MAGNET_FRAMES
+    mov edx,OFFSET msgMagnet
+    mov al,lightMagenta
+    call SetMsg
+    call PlayBeep
+    jmp coDone
+
+coOil:                                  ; oil stays on the road and makes the player skid
+    cmp esi,0
+    jne coDone
+    cmp skidTimer,0
+    jne coDone
+    mov skidTimer,SKID_FRAMES
+    mov eax,2
+    call RandomRange                    ; 0 or 1
+    add eax,eax
+    dec eax                             ; -1 = slide left, +1 = slide right
+    mov skidDir,eax
+    mov edx,OFFSET msgOil
+    mov al,yellow
+    call SetMsg
     jmp coDone
 
 coObstacle:                             ; every car is slowed down by a barrier
@@ -2924,6 +3302,12 @@ clNext:
     mov al,lightGreen
     call SetMsg
     call PlayBeep
+    cmp carLaps,TOTAL_LAPS-1
+    jne clNewLap
+    mov edx,OFFSET msgFinalLap
+    mov al,yellow
+    call SetMsg
+clNewLap:
     cmp carLaps,TOTAL_LAPS
     jae clFinish
     call GenerateItems                  ; new random items for the next lap
@@ -2975,8 +3359,12 @@ utEdge:
     dec edgeCooldown
 utMessage:
     cmp msgTimer,0
-    je utFrames
+    je utMagnet
     dec msgTimer
+utMagnet:
+    cmp magnetTimer,0
+    je utFrames
+    dec magnetTimer
 utFrames:
     inc raceFrames
     popad
