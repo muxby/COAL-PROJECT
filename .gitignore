@@ -1,0 +1,10 @@
+Debug/
+Release/
+.vs/
+*.obj
+*.exe
+*.lst
+*.ilk
+*.pdb
+*.map
+*.user
