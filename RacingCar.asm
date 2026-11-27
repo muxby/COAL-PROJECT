@@ -1190,9 +1190,9 @@ NameScreen PROC
     mov eax,ATTR_BRIGHT
     call SetTextColor
     mov edx,OFFSET nameInput
-    mov ecx,NAME_SIZE
+    mov ecx,38                          ; read the whole line, even a long one
     call ReadString                     ; EAX = number of characters typed
-    mov nameInput[NAME_MAX],0           ; never longer than 15 characters
+    mov nameInput[NAME_MAX],0           ; keep only the first 15 characters
     mov esi,OFFSET nameInput
     cmp eax,0
     jne nsCopy
