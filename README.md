@@ -37,6 +37,7 @@ Edit `MASMDIR` at the top of the script if MASM is not in `C:\Masm615`.
 |---|---|
 | `A` / `D` or Left / Right | Steer |
 | `W` / `S` or Up / Down | Gear up / down (5 gears) |
+| `SPACE` | Fire a nitro charge |
 | `P` | Pause, `P` again to resume |
 | `X` | Quit the race and return to the Start screen |
 | `1` .. `5` | Menu options on the Start, Pause and Result screens |
@@ -64,7 +65,19 @@ The score never goes below zero. A hit also slows the car for 2 seconds.
 - Level settings (track width, items, lane changing) are stored in a table, so both levels
   use the same race procedures
 - Highest score saved to a file with Irvine32 file procedures
-- Extras: shield power-up, difficulty setting, sound on/off, race timer, finish animation
+- Extras: difficulty setting, sound on/off, race timer, finish animation
+
+## Creative extras
+
+- **Nitro**: every 5 coins fill one nitro charge (max 3); `SPACE` fires it for 3 seconds of boost
+- **Coin magnet** `(M)`: coins ahead of the car slide towards it for 6 seconds
+- **Shield** `[S]`: absorbs the next crash with a car or a barrier
+- **Oil spills** `~~~~`: no points lost, but the car skids sideways for a moment
+- **Sliding barriers**: in Level 2 two barriers per lap move from kerb to kerb
+- **Pick your car**: red, yellow or white, chosen after typing the name
+- **Lap map**: a strip in the side panel with a coloured marker for all five cars
+- **Race commentary**: messages for overtakes, lost places and the final lap
+- **Animated Start screen**: a little car keeps driving under the menu
 
 ## How the drawing works
 
